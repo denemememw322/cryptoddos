@@ -2,27 +2,45 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Chrome kurulumu (yeni yöntem)
+# Chrome için gerekli bağımlılıklar
 RUN apt-get update && apt-get install -y \
-    wget \
+    curl \
     gnupg \
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update && apt-get install -y \
-    google-chrome-stable \
-    fonts-ipafont-gothic \
-    fonts-wqy-zenhei \
-    fonts-thai-tlwg \
-    fonts-kacst \
-    fonts-freefont-ttf \
-    --no-install-recommends \
+    unzip \
+    xvfb \
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libxss1 \
+    libxtst6 \
+    libgbm1 \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libgtk-3-0 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxshmfence1 \
+    libasound2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Chrome'u doğrudan .deb ile kur (apt-key yok)
+RUN curl -LO https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get update && apt-get install -y ./google-chrome-stable_current_amd64.deb \
+    && rm google-chrome-stable_current_amd64.deb
 
 # Python paketleri
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Playwright kurulumu
+# Playwright
 RUN playwright install chromium
 
 # Uygulama
