@@ -1,0 +1,5 @@
+# format: kullanici_adi:sifre:hedef_url
+oscarly:oscar123:https://smmreseller.in/
+oscarly1:oscar123:https://nixonsmm.com/
+oscarly2:oscar123:https://smmsem.com/
+oscarly3:oscar123:https://smmvelocity.com/
