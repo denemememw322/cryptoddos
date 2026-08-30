@@ -8,7 +8,7 @@ import shutil
 import sys
 import logging
 from datetime import datetime
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout, expect
 from PIL import Image
 import ddddocr
 import traceback
@@ -60,6 +60,23 @@ class DDoSNowManager:
                         logger.info(f"Hesap yüklendi: {p[0]} -> {p[2]}")
         return accounts
 
+    def wait_for_inputs(self, page, username, timeout=30000):
+        """Sayfadaki inputların yüklenmesini bekle"""
+        try:
+            # Önce en az 2 input olana kadar bekle
+            start_time = time.time()
+            while time.time() - start_time < timeout / 1000:
+                input_count = page.locator("input").count()
+                logger.info(f"[{username}] Sayfada {input_count} input var")
+                if input_count >= 3:  # host, time, captcha en az 3 input olmalı
+                    logger.info(f"[{username}] Tüm inputlar yüklendi!")
+                    return True
+                time.sleep(1)
+            return False
+        except Exception as e:
+            logger.error(f"[{username}] Input bekleme hatası: {e}")
+            return False
+
     def solve_captcha(self, page, username):
         """Captcha çöz - başarılı olana kadar dene"""
         try:
@@ -79,7 +96,7 @@ class DDoSNowManager:
             while True:
                 attempt += 1
                 try:
-                    # Captcha görselini bul
+                    # Captcha görselini bekle
                     img_elem = page.locator("img[alt='captcha']").first
                     if img_elem.count() == 0:
                         time.sleep(1)
@@ -216,7 +233,14 @@ class DDoSNowManager:
                         logger.info(f"[{username}] Hub sayfasına gidiliyor...")
                         page.goto(f"{self.base_url}/hub", timeout=60000)
                         page.wait_for_load_state("networkidle", timeout=30000)
-                        time.sleep(5)
+                        
+                        # Inputların yüklenmesini bekle
+                        if not self.wait_for_inputs(page, username):
+                            logger.error(f"[{username}] Inputlar yüklenmedi!")
+                            time.sleep(30)
+                            continue
+                        
+                        time.sleep(2)
                         
                         if "login" in page.url:
                             logger.error(f"[{username}] Giriş başarısız!")
@@ -240,10 +264,7 @@ class DDoSNowManager:
                             # ===== HEDEF URL =====
                             target_input = page.locator("input[name='hub.0.host']").first
                             if target_input.count() == 0:
-                                # Alternatif ara
                                 target_input = page.locator("input[placeholder*='IPv4']").first
-                            if target_input.count() == 0:
-                                target_input = page.locator("input[type='text']").first
                             if target_input.count() == 0:
                                 logger.error(f"[{username}] Hedef URL input bulunamadı!")
                                 page.reload()
@@ -256,11 +277,7 @@ class DDoSNowManager:
                             # ===== SÜRE - name="hub.0.time" =====
                             time_input = page.locator("input[name='hub.0.time']").first
                             if time_input.count() == 0:
-                                # Alternatif: number tipindeki input
                                 time_input = page.locator("input[type='number']").first
-                            if time_input.count() == 0:
-                                # Alternatif: slider'ı bul
-                                time_input = page.locator("input[type='range']").first
                             if time_input.count() == 0:
                                 # Tüm inputları dene
                                 all_inputs = page.locator("input").all()
@@ -274,20 +291,9 @@ class DDoSNowManager:
                                         pass
                             
                             if time_input.count() == 0:
-                                logger.error(f"[{username}] Süre input bulunamadı! Sayfadaki inputları logluyorum...")
-                                # Tüm inputları logla
-                                all_inputs = page.locator("input").all()
-                                for i, inp in enumerate(all_inputs):
-                                    try:
-                                        name = inp.get_attribute("name") or ""
-                                        input_id = inp.get_attribute("id") or ""
-                                        input_type = inp.get_attribute("type") or ""
-                                        placeholder = inp.get_attribute("placeholder") or ""
-                                        logger.info(f"[{username}] Input {i}: name='{name}', id='{input_id}', type='{input_type}', placeholder='{placeholder}'")
-                                    except:
-                                        pass
+                                logger.error(f"[{username}] Süre input bulunamadı! Sayfa yenileniyor...")
                                 page.reload()
-                                time.sleep(3)
+                                time.sleep(5)
                                 continue
                                 
                             time_input.fill("300", timeout=10000)
