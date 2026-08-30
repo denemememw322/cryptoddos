@@ -1,4 +1,3 @@
-oscarly:oscar123:https://smmreseller.in/
-oscarly1:oscar123:https://pagelike.in/
-oscarly2:oscar123:https://altcha-admin.perfectpanel.com/
-oscarly3:oscar123:https://altcha.perfectpanel.com/
+oscarly:oscar123:https://altcha-admin.perfectpanel.com/
+oscarly1:oscar123:https://altcha.perfectpanel.com/
+oscarly2:oscar123:https://pagelike.in/
